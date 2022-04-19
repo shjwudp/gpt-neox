@@ -563,6 +563,22 @@ def train(
     # get noise scale logger (if neox_args.log_gradient_noise_scale is True)
     noise_scale_logger = get_noise_scale_logger(neox_args)
 
+    from torch.profiler import profile, record_function, ProfilerActivity, tensorboard_trace_handler
+
+    if torch.distributed.get_rank() == 0:
+        profiler = torch.profiler.profile(
+            profile_memory=True,
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            schedule=torch.profiler.schedule(
+                wait=1,
+                warmup=1,
+                active=1,
+                repeat=1),
+            on_trace_ready=tensorboard_trace_handler("./log/gpt-moe"),
+            with_flops=True,
+        )
+        profiler.start()
+
     # to monitor if we've skipped many iterations in a row and trigger an early exit
     overflow_monitor = OverflowMonitor(optimizer)
     while iteration < neox_args.train_iters:
@@ -575,6 +591,11 @@ def train(
             lr_scheduler=lr_scheduler,
         )
         iteration += 1
+
+        if torch.distributed.get_rank() == 0:
+            profiler.step()
+            if iteration > 10:
+                profiler.stop()
 
         overflow_monitor.check(skipped_iter)  # check for repeated overflow
         if neox_args.log_gradient_noise_scale:  # log noise scale if applicable
